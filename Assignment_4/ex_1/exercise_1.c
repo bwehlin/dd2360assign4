@@ -11,7 +11,26 @@
 const char* clGetErrorString(int);
 
 
-const char *mykernel = ""; //TODO: Write your kernel here
+const char *hello_kernel = R"~(
+  __kernel
+  void hello_world()
+  {
+    int globalIdX = get_global_id(0);
+    int globalIdY = get_global_id(1);
+    int globalIdZ = get_global_id(2);
+
+    int localIdX = get_local_id(0);
+    int localIdY = get_local_id(1);
+    int localIdZ = get_local_id(2);
+
+    int blockIdX = get_group_id(0);
+    int blockIdY = get_group_id(1);
+    int blockIdZ = get_group_id(2);
+
+    printf("Hello World! My threadId is (%d, %d, %d). This is item (%d, %d, %d) within group (%d, %d, %d).\n",
+        globalIdX, globalIdY, globalIdZ, localIdX, localIdY, localIdZ, blockIdX, blockIdY, blockIdZ);
+  }
+)~"; //TODO: Write your kernel here
 
 
 int main(int argc, char *argv) {
@@ -35,7 +54,16 @@ int main(int argc, char *argv) {
   cl_command_queue cmd_queue = clCreateCommandQueue(context, device_list[0], 0, &err);CHK_ERROR(err); 
 
   /* Insert your own code here */
-  
+ 
+  cl_program program = clCreateProgramWithSource(context, 1, (const char**)&hello_kernel, NULL, &err);CHK_ERROR(err);
+  err = clBuildProgram(program, 1, device_list, NULL, NULL, NULL);CHK_ERROR(err);
+  cl_kernel kernel = clCreateKernel(program, "hello_world", &err);CHK_ERROR(err);
+
+  size_t n_workitem[3] = {8, 8, 8};
+  size_t workgroup_size[3] = {2, 2, 2};
+  err = clEnqueueNDRangeKernel(cmd_queue, kernel, 3, NULL, n_workitem, workgroup_size, 0, NULL, NULL);CHK_ERROR(err);
+  err = clFinish(cmd_queue);CHK_ERROR(err);
+
   // Finally, release all that we have allocated.
   err = clReleaseCommandQueue(cmd_queue);CHK_ERROR(err);
   err = clReleaseContext(context);CHK_ERROR(err);
