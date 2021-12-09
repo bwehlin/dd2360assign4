@@ -36,8 +36,8 @@ const char *lorentz_kernel = R"~(
   void lorentz(__global Particle* particles, float dt, int n)
   {
     float sigma = 10.f;
-    float rho = 8.f/3.f;
-    float beta = 28.f;
+    float rho = 28.f;
+    float beta = 8.f/3.f;
 
     int idx = get_global_id(0);
     if (idx >= n)
