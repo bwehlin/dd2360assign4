@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
     err = clFinish(cmd_queue);CHK_ERROR(err);
 
     fprintf(fl, "%f", (float)i * dt);
-    for (int j = 0; j < 1; ++j)
+    for (int j = 0; j < 3; ++j)
     {
       Particle* part = &particles[j];
       fprintf(fl, ", %f, %f, %f", part->pos[0], part->pos[1], part->pos[2]);
