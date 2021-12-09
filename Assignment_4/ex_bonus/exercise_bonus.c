@@ -2,11 +2,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 #include <math.h>
 #include <CL/cl.h>
 
 // This is a macro for checking the error variable.
-#define CHK_ERROR(err) if (err != CL_SUCCESS) fprintf(stderr,"Error on line %d: %s\n",__LINE__, clGetErrorString(err));
+#define CHK_ERROR(err) if (err != CL_SUCCESS) { fprintf(stderr,"Error on line %d: %s\n",__LINE__, clGetErrorString(err)); return EXIT_FAILURE; }
 
 #ifndef bool
 #define bool int
@@ -17,48 +19,59 @@
 // A errorCode to string converter (forward declaration)
 const char* clGetErrorString(int);
 
+typedef struct
+{
+  float pos[3];
+  float vel[3];
+} Particle;
 
-const char *saxpy_kernel = R"~(
-  __kernel
-  void saxpy(__global float* x, __global float* y, __global float* a, __global size_t* n)
+const char *lorentz_kernel = R"~(
+  typedef struct
   {
+    float pos[3];
+    float vel[3];
+  } Particle;
+
+  __kernel
+  void lorentz(__global Particle* particles, float dt, int n)
+  {
+    float sigma = 10.f;
+    float rho = 8.f/3.f;
+    float beta = 28.f;
+
     int idx = get_global_id(0);
-    if (idx >= *n)
+    if (idx >= n)
+    {
       return;
-    y[idx] =  *a * x[idx] + y[idx];
+    }
+
+    __global Particle* p = &particles[idx];
+
+    p->vel[0] = sigma * (p->pos[1] - p->pos[0]);
+    p->vel[1] = p->pos[0] * (rho - p->pos[2]) - p->pos[1];
+    p->vel[2] = p->pos[0] * p->pos[1] - beta * p->pos[2];
+
+    for (int dim = 0; dim < 3; ++dim)
+    {
+      p->pos[dim] = p->pos[dim] +  dt * p->vel[dim]; 
+    }
   }
 )~"; //TODO: Write your kernel here
 
-void cpu_saxpy(float* x, float* y, float a, size_t n)
-{
-  for (size_t i = 0; i < n; ++i)
-  {
-    y[i] = a * x[i] + y[i];
-  }
-}
 
-bool compare(float* a, float* b, size_t n)
+Particle* create_particles(size_t n)
 {
-  for (size_t i = 0; i < n; ++i)
-  {
-    if (fabs(a[i] - b[i]) > a[i]/1e6)
-    {
-      return false;
-    }
-  }
-  return true;
-}
-
-float* create_array(size_t n)
-{
-  float* arr = (float*) malloc(sizeof(float) * n);
+  Particle* arr = (Particle*) malloc(sizeof(Particle) * n);
   if (!arr)
   {
     return NULL;
   }
   for (size_t i = 0ul; i < n; ++i)
   {
-    arr[i] = (float)(rand()) / (float)(RAND_MAX);
+    for (size_t dim = 0; dim < 3; ++dim)
+    {
+      arr[i].pos[dim] = (float)(rand()) / (float)(RAND_MAX);
+    }
   }
   return arr;
 }
@@ -67,24 +80,24 @@ float* create_array(size_t n)
 
 int main(int argc, char **argv) {
 
-  if (argc != 2)
+  if (argc != 3)
   {
-    printf("usage: %s n_items\n", argv[0]);
+    printf("usage: %s n_particles\n", argv[0]);
     return EXIT_FAILURE;
   }
 
-  int n_items = atoi(argv[1]);
-  printf("Running with %d items...\n", n_items);
+  int n_particles = atoi(argv[1]);
+  int n_iter = atoi(argv[2]);
+  printf("Running with %d particles over %d iterations...\n", n_particles, n_iter);
 
-  float* x = create_array(n_items);
-  float* y = create_array(n_items);
-  if (!x || !y)
+  Particle* particles = create_particles(n_particles);
+  if (!particles)
   {
     printf("Out of memory!\n");
     return EXIT_FAILURE;
   }
 
-  float a = 0.5;
+  float dt = 0.01f;
 
   cl_platform_id * platforms; cl_uint     n_platform;
 
@@ -107,68 +120,70 @@ int main(int argc, char **argv) {
 
   /* Insert your own code here */
  
-  cl_program program = clCreateProgramWithSource(context, 1, (const char**)&saxpy_kernel, NULL, &err);CHK_ERROR(err);
-  err = clBuildProgram(program, 1, device_list, NULL, NULL, NULL);CHK_ERROR(err);
-  cl_kernel kernel = clCreateKernel(program, "saxpy", &err);CHK_ERROR(err);
+  cl_program program = clCreateProgramWithSource(context, 1, (const char**)&lorentz_kernel, NULL, &err);CHK_ERROR(err);
+  err = clBuildProgram(program, 1, device_list, NULL, NULL, NULL);
 
-  cl_mem x_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
-  cl_mem y_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
-
-  cl_mem a_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float), NULL, &err);CHK_ERROR(err);
-  cl_mem n_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(size_t), NULL, &err);CHK_ERROR(err);
-
-
-  err = clEnqueueWriteBuffer(cmd_queue, x_dev, CL_TRUE, 0, n_items*sizeof(float), x, 0, NULL, NULL);CHK_ERROR(err);
-  err = clEnqueueWriteBuffer(cmd_queue, y_dev, CL_TRUE, 0, n_items*sizeof(float), y, 0, NULL, NULL);CHK_ERROR(err);
-  
-  err = clEnqueueWriteBuffer(cmd_queue, a_dev, CL_TRUE, 0, sizeof(float), &a, 0, NULL, NULL);CHK_ERROR(err);
-  err = clEnqueueWriteBuffer(cmd_queue, n_dev, CL_TRUE, 0, sizeof(size_t), &n_items, 0, NULL, NULL);CHK_ERROR(err);
-
-  err = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&x_dev);
-  err = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&y_dev);
-  
-  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&a_dev);
-  err = clSetKernelArg(kernel, 3, sizeof(cl_mem), (void*)&n_dev);
-
-  size_t n_workitem[1] = {((n_items+BLOCK_SZ-1)/BLOCK_SZ)*BLOCK_SZ};
-  size_t workgroup_size[1] = {BLOCK_SZ};
-  err = clEnqueueNDRangeKernel(cmd_queue, kernel, 1, NULL, n_workitem, workgroup_size, 0, NULL, NULL);CHK_ERROR(err);
-
-  float* y_from_dev = (float*)malloc(n_items*sizeof(float));
-  err = clEnqueueReadBuffer(cmd_queue, y_dev, CL_TRUE, 0, n_items*sizeof(float), y_from_dev, 0, NULL, NULL);
-
-  err = clFlush(cmd_queue);CHK_ERROR(err);
-  err = clFinish(cmd_queue);CHK_ERROR(err);
-
-  //for (int i = 0; i < 10; ++i) {    printf("CPU y: %f, GPU y: %f\n", y[i], y_from_dev[i]); }
-
-  cpu_saxpy(x, y, a, n_items); 
-  
-  //for (int i = 0; i < 10; ++i) {    printf("CPU y: %f, GPU y: %f\n", y[i], y_from_dev[i]); }
-
-  printf("Comparing the output for each implementation... ");
-  if (compare(y, y_from_dev, n_items))
+  if (err != CL_SUCCESS)
   {
-    printf("Correct!\n");
+    size_t logSz;
+    err = clGetProgramBuildInfo(program, device_list[0], CL_PROGRAM_BUILD_LOG, 0, NULL, &logSz);CHK_ERROR(err);
+    char* buildLog = (char*)malloc(logSz*sizeof(char));
+    err = clGetProgramBuildInfo(program, device_list[0], CL_PROGRAM_BUILD_LOG, logSz, buildLog, NULL);CHK_ERROR(err);
+    printf("BUILD FAILED! Build log: %s", buildLog);
+    return EXIT_FAILURE;
   }
-  else
+
+  cl_kernel kernel = clCreateKernel(program, "lorentz", &err);CHK_ERROR(err);
+
+  cl_mem particles_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, n_particles*sizeof(Particle), NULL, &err);CHK_ERROR(err);
+
+  cl_int n_dev = n_particles;
+  cl_float dt_dev = dt;
+
+
+  err = clEnqueueWriteBuffer(cmd_queue, particles_dev, CL_TRUE, 0, n_particles*sizeof(Particle), particles, 0, NULL, NULL);CHK_ERROR(err);
+
+  FILE* fl = fopen("sims.csv", "w");
+  if (!fl)
   {
-    printf("Incorrect!\n");
+    printf("Error: %s\n", strerror(errno));
+    return EXIT_FAILURE;
+  }
+
+  for (size_t i = 0; i < n_iter; ++i)
+  {
+    err = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&particles_dev);
+    
+    err = clSetKernelArg(kernel, 1, sizeof(cl_float), (void*)&dt_dev);
+    err = clSetKernelArg(kernel, 2, sizeof(cl_int), (void*)&n_dev);
+
+    size_t n_workitem[1] = {((n_particles+BLOCK_SZ-1)/BLOCK_SZ)*BLOCK_SZ};
+    size_t workgroup_size[1] = {BLOCK_SZ};
+    err = clEnqueueNDRangeKernel(cmd_queue, kernel, 1, NULL, n_workitem, workgroup_size, 0, NULL, NULL);CHK_ERROR(err);
+
+    err = clEnqueueReadBuffer(cmd_queue, particles_dev, CL_TRUE, 0, n_particles*sizeof(Particle), particles, 0, NULL, NULL);
+
+    err = clFlush(cmd_queue);CHK_ERROR(err);
+    err = clFinish(cmd_queue);CHK_ERROR(err);
+
+    fprintf(fl, "%f", (float)i * dt);
+    for (int j = 0; j < 1; ++j)
+    {
+      Particle* part = &particles[j];
+      fprintf(fl, ", %f, %f, %f", part->pos[0], part->pos[1], part->pos[2]);
+    }
+    fprintf(fl, "\n");
   }
 
   // Finally, release all that we have allocated.
   err = clReleaseCommandQueue(cmd_queue);CHK_ERROR(err);
   err = clReleaseContext(context);CHK_ERROR(err);
 
-  err = clReleaseMemObject(x_dev);CHK_ERROR(err);
-  err = clReleaseMemObject(y_dev);CHK_ERROR(err);
-  err = clReleaseMemObject(a_dev);CHK_ERROR(err);
-  err = clReleaseMemObject(n_dev);CHK_ERROR(err);
+  err = clReleaseMemObject(particles_dev);CHK_ERROR(err);
 
   free(platforms);
   free(device_list);
-  free(x);
-  free(y);
+  free(particles);
 
   return 0;
 }
