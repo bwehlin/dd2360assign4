@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  float dt = 0.1f;
+  float dt = 0.001f;
 
   cl_platform_id * platforms; cl_uint     n_platform;
 
