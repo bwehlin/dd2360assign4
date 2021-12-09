@@ -2,38 +2,90 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <CL/cl.h>
 
 // This is a macro for checking the error variable.
-#define CHK_ERROR(err) if (err != CL_SUCCESS) fprintf(stderr,"Error: %s\n",clGetErrorString(err));
+#define CHK_ERROR(err) if (err != CL_SUCCESS) fprintf(stderr,"Error on line %d: %s\n",__LINE__, clGetErrorString(err));
+
+#ifndef bool
+#define bool int
+#define true 1
+#define false 0
+#endif
 
 // A errorCode to string converter (forward declaration)
 const char* clGetErrorString(int);
 
 
-const char *hello_kernel = R"~(
+const char *saxpy_kernel = R"~(
   __kernel
-  void hello_world()
+  void saxpy(__global float* x, __global float* y, __global float* a, __global size_t* n)
   {
-    int globalIdX = get_global_id(0);
-    int globalIdY = get_global_id(1);
-    int globalIdZ = get_global_id(2);
-
-    int localIdX = get_local_id(0);
-    int localIdY = get_local_id(1);
-    int localIdZ = get_local_id(2);
-
-    int blockIdX = get_group_id(0);
-    int blockIdY = get_group_id(1);
-    int blockIdZ = get_group_id(2);
-
-    printf("Hello World! My threadId is (%d, %d, %d). This is item (%d, %d, %d) within group (%d, %d, %d).\n",
-        globalIdX, globalIdY, globalIdZ, localIdX, localIdY, localIdZ, blockIdX, blockIdY, blockIdZ);
+    int idx = get_global_id(0);
+    if (idx >= *n)
+      return;
+    y[idx] =  *a * x[idx] + y[idx];
   }
 )~"; //TODO: Write your kernel here
 
+void cpu_saxpy(float* x, float* y, float a, size_t n)
+{
+  for (size_t i = 0; i < n; ++i)
+  {
+    y[i] = a * x[i] + y[i];
+  }
+}
 
-int main(int argc, char *argv) {
+bool compare(float* a, float* b, size_t n)
+{
+  for (size_t i = 0; i < n; ++i)
+  {
+    if (fabs(a[i] - b[i]) > a[i]/1e6)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+float* create_array(size_t n)
+{
+  float* arr = (float*) malloc(sizeof(float) * n);
+  if (!arr)
+  {
+    return NULL;
+  }
+  for (size_t i = 0ul; i < n; ++i)
+  {
+    arr[i] = (float)(rand()) / (float)(RAND_MAX);
+  }
+  return arr;
+}
+
+#define BLOCK_SZ 128
+
+int main(int argc, char **argv) {
+
+  if (argc != 2)
+  {
+    printf("usage: %s n_items\n", argv[0]);
+    return EXIT_FAILURE;
+  }
+
+  int n_items = atoi(argv[1]);
+  printf("Running with %d items...\n", n_items);
+
+  float* x = create_array(n_items);
+  float* y = create_array(n_items);
+  if (!x || !y)
+  {
+    printf("Out of memory!\n");
+    return EXIT_FAILURE;
+  }
+
+  float a = 0.5;
+
   cl_platform_id * platforms; cl_uint     n_platform;
 
   // Find OpenCL Platforms
@@ -55,21 +107,69 @@ int main(int argc, char *argv) {
 
   /* Insert your own code here */
  
-  cl_program program = clCreateProgramWithSource(context, 1, (const char**)&hello_kernel, NULL, &err);CHK_ERROR(err);
+  cl_program program = clCreateProgramWithSource(context, 1, (const char**)&saxpy_kernel, NULL, &err);CHK_ERROR(err);
   err = clBuildProgram(program, 1, device_list, NULL, NULL, NULL);CHK_ERROR(err);
-  cl_kernel kernel = clCreateKernel(program, "hello_world", &err);CHK_ERROR(err);
+  cl_kernel kernel = clCreateKernel(program, "saxpy", &err);CHK_ERROR(err);
 
-  size_t n_workitem[3] = {8, 8, 8};
-  size_t workgroup_size[3] = {2, 2, 2};
-  err = clEnqueueNDRangeKernel(cmd_queue, kernel, 3, NULL, n_workitem, workgroup_size, 0, NULL, NULL);CHK_ERROR(err);
+  cl_mem x_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
+  cl_mem y_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
+
+  cl_mem a_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float), NULL, &err);CHK_ERROR(err);
+  cl_mem n_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(size_t), NULL, &err);CHK_ERROR(err);
+
+
+  err = clEnqueueWriteBuffer(cmd_queue, x_dev, CL_TRUE, 0, n_items*sizeof(float), x, 0, NULL, NULL);CHK_ERROR(err);
+  err = clEnqueueWriteBuffer(cmd_queue, y_dev, CL_TRUE, 0, n_items*sizeof(float), y, 0, NULL, NULL);CHK_ERROR(err);
+  
+  err = clEnqueueWriteBuffer(cmd_queue, a_dev, CL_TRUE, 0, sizeof(float), &a, 0, NULL, NULL);CHK_ERROR(err);
+  err = clEnqueueWriteBuffer(cmd_queue, n_dev, CL_TRUE, 0, sizeof(size_t), &n_items, 0, NULL, NULL);CHK_ERROR(err);
+
+  err = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&x_dev);
+  err = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&y_dev);
+  
+  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&a_dev);
+  err = clSetKernelArg(kernel, 3, sizeof(cl_mem), (void*)&n_dev);
+
+  size_t n_workitem[1] = {((n_items+BLOCK_SZ-1)/BLOCK_SZ)*BLOCK_SZ};
+  size_t workgroup_size[1] = {BLOCK_SZ};
+  err = clEnqueueNDRangeKernel(cmd_queue, kernel, 1, NULL, n_workitem, workgroup_size, 0, NULL, NULL);CHK_ERROR(err);
+
+  float* y_from_dev = (float*)malloc(n_items*sizeof(float));
+  err = clEnqueueReadBuffer(cmd_queue, y_dev, CL_TRUE, 0, n_items*sizeof(float), y_from_dev, 0, NULL, NULL);
+
+  err = clFlush(cmd_queue);CHK_ERROR(err);
   err = clFinish(cmd_queue);CHK_ERROR(err);
+
+  //for (int i = 0; i < 10; ++i) {    printf("CPU y: %f, GPU y: %f\n", y[i], y_from_dev[i]); }
+
+  cpu_saxpy(x, y, a, n_items); 
+  
+  //for (int i = 0; i < 10; ++i) {    printf("CPU y: %f, GPU y: %f\n", y[i], y_from_dev[i]); }
+
+  printf("Comparing the output for each implementation... ");
+  if (compare(y, y_from_dev, n_items))
+  {
+    printf("Correct!\n");
+  }
+  else
+  {
+    printf("Incorrect!\n");
+  }
 
   // Finally, release all that we have allocated.
   err = clReleaseCommandQueue(cmd_queue);CHK_ERROR(err);
   err = clReleaseContext(context);CHK_ERROR(err);
+
+  err = clReleaseMemObject(x_dev);CHK_ERROR(err);
+  err = clReleaseMemObject(y_dev);CHK_ERROR(err);
+  err = clReleaseMemObject(a_dev);CHK_ERROR(err);
+  err = clReleaseMemObject(n_dev);CHK_ERROR(err);
+
   free(platforms);
   free(device_list);
-  
+  free(x);
+  free(y);
+
   return 0;
 }
 
