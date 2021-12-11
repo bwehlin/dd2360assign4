@@ -7,10 +7,15 @@
 #include <math.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <CL/cl.h>
 
+#ifdef USE_OPENCL
+#include <CL/cl.h>
+#endif
+
+#ifdef USE_OPENCL
 // This is a macro for checking the error variable.
 #define CHK_ERROR(err) if (err != CL_SUCCESS) { fprintf(stderr,"Error on line %d: %s\n",__LINE__, clGetErrorString(err)); return EXIT_FAILURE; }
+#endif
 
 #ifndef bool
 #define bool int
@@ -19,8 +24,10 @@
 #endif
 
 
+#ifdef USE_OPENCL
 // A errorCode to string converter (forward declaration)
 const char* clGetErrorString(int);
+#endif
 
 typedef struct
 {
@@ -34,7 +41,8 @@ void print_time(const char* op, struct timeval* start, struct timeval* end)
   printf("%s took %.3f ms", op, ms);
 }
 
-const char *lorentz_kernel = R"~(
+#ifdef USE_OPENCL
+const char *lorentz_kernel = R"~( 
   typedef struct
   {
     float pos[3];
@@ -66,6 +74,8 @@ const char *lorentz_kernel = R"~(
     }
   }
 )~";
+#endif
+
 
 void lorentz_cpu(Particle* particles, float dt, int n_part, int n_iter)
 {
@@ -73,8 +83,13 @@ void lorentz_cpu(Particle* particles, float dt, int n_part, int n_iter)
   float rho = 28.f;
   float beta = 8.f/3.f;
 
+#pragma acc data copy(particles[0:n_part])
+
   for (int j = 0; j < n_iter; ++j)
   {
+#ifdef USE_ACC
+#pragma acc parallel loop
+#endif
     for (int i = 0; i < n_part; ++i)
     {
       Particle* p = &particles[i];
@@ -90,7 +105,6 @@ void lorentz_cpu(Particle* particles, float dt, int n_part, int n_iter)
     }
   }
 }
-
 
 Particle* create_particles(size_t n)
 {
@@ -109,13 +123,16 @@ Particle* create_particles(size_t n)
   return arr;
 }
 
-int gpu_main(char** args)
+#ifdef USE_OPENCL
+int gpu_main(int argc, char** args)
 {
   int n_particles = atoi(args[1]);
   int n_iter = atoi(args[2]);
   int blocksz = atoi(args[3]);
   int write_output = atoi(args[4]);
-  
+ 
+  int transfer_data = argc == 6 ? atoi(args[5]) : 0;
+
   printf("Running with %d particles over %d iterations...\n", n_particles, n_iter);
 
   Particle* particles = create_particles(n_particles);
@@ -195,13 +212,16 @@ int gpu_main(char** args)
     size_t workgroup_size[1] = {blocksz};
     err = clEnqueueNDRangeKernel(cmd_queue, kernel, 1, NULL, n_workitem, workgroup_size, 0, NULL, NULL);CHK_ERROR(err);
 
-    if (write_output)
+    if (write_output || transfer_data)
     {
       err = clEnqueueReadBuffer(cmd_queue, particles_dev, CL_TRUE, 0, n_particles*sizeof(Particle), particles, 0, NULL, NULL);
 
       err = clFlush(cmd_queue);CHK_ERROR(err);
       err = clFinish(cmd_queue);CHK_ERROR(err);
+    }
 
+    if (write_output)
+    {
       fprintf(fl, "%f", (float)i * dt);
       for (int j = 0; j < 3; ++j)
       {
@@ -227,11 +247,15 @@ int gpu_main(char** args)
 
   return EXIT_SUCCESS;
 }
+#endif
 
-int cpu_main(char** args)
+int cpu_main(int argc, char** args)
 {
   int n_particles = atoi(args[1]);
   int n_iter = atoi(args[2]);
+
+  int use_acc = argc == 4;
+
   float dt = 0.001f;
 
   Particle* particles = create_particles(n_particles);
@@ -250,12 +274,14 @@ int main(int argc, char **argv)
 {
   if (argc == 3)
   {
-    return cpu_main(argv);
+    return cpu_main(argc, argv);
   }
-  else if (argc == 5)
+#ifdef USE_OPENCL
+  else if (argc == 5 || argc == 6)
   {
-    return gpu_main(argv);
+    return gpu_main(argc, argv);
   }
+#endif
   else
   {
     printf("usage: %s n_particles n_iterations [block_sz write_output]\n", argv[0]);
@@ -263,7 +289,7 @@ int main(int argc, char **argv)
   }
 }
 
-
+#ifdef USE_OPENCL
 
 // The source for this particular version is from: https://stackoverflow.com/questions/24326432/convenient-way-to-show-opencl-error-codes
 const char* clGetErrorString(int errorCode) {
@@ -360,3 +386,6 @@ const char* clGetErrorString(int errorCode) {
   default: return "CL_UNKNOWN_ERROR";
   }
 }
+
+#endif
+

@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <unistd.h>
+#include <sys/time.h>
 #include <CL/cl.h>
 
 // This is a macro for checking the error variable.
@@ -13,6 +15,12 @@
 #define true 1
 #define false 0
 #endif
+
+void print_time(const char* op, struct timeval* start, struct timeval* end)
+{
+  float ms = (float)(end->tv_sec - start->tv_sec) * 1e3f + (float)(end->tv_usec - start->tv_usec) / 1e3f;
+  printf("%s took %.3f ms\n", op, ms);
+}
 
 // A errorCode to string converter (forward declaration)
 const char* clGetErrorString(int);
@@ -33,7 +41,7 @@ void cpu_saxpy(float* x, float* y, float a, size_t n)
 {
   for (size_t i = 0; i < n; ++i)
   {
-    y[i] = a * x[i] + y[i];
+    y[i] += a * x[i];
   }
 }
 
@@ -111,6 +119,9 @@ int main(int argc, char **argv) {
   err = clBuildProgram(program, 1, device_list, NULL, NULL, NULL);CHK_ERROR(err);
   cl_kernel kernel = clCreateKernel(program, "saxpy", &err);CHK_ERROR(err);
 
+  struct timeval begin, end;
+  gettimeofday(&begin, NULL);
+
   cl_mem x_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
   cl_mem y_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
 
@@ -137,9 +148,15 @@ int main(int argc, char **argv) {
   err = clFlush(cmd_queue);CHK_ERROR(err);
   err = clFinish(cmd_queue);CHK_ERROR(err);
 
+  gettimeofday(&end, NULL);
+  print_time("OpenCL", &begin, &end);
+
   //for (int i = 0; i < 10; ++i) {    printf("CPU y: %f, GPU y: %f\n", y[i], y_from_dev[i]); }
 
-  cpu_saxpy(x, y, a, n_items); 
+  gettimeofday(&begin, NULL);
+  cpu_saxpy(x, y, a, n_items);
+  gettimeofday(&end, NULL);
+  print_time("CPU", &begin, &end); 
   
   //for (int i = 0; i < 10; ++i) {    printf("CPU y: %f, GPU y: %f\n", y[i], y_from_dev[i]); }
 

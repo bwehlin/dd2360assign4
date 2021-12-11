@@ -5,8 +5,9 @@ function gpu_sim_no_traj()
   NUM_PART=$1
   NUM_ITER=$2
   BLOCK_SZ=$3
+  TRANSFER_DATA=$4
 
-  command="srun -n 1 ./exbonus.out $NUM_PART $NUM_ITER $BLOCK_SZ 0"
+  command="srun -n 1 ./exbonus.out $NUM_PART $NUM_ITER $BLOCK_SZ 0 $TRANSFER_DATA"
   echo "COMMAND: $command"
   simout=$(sh -c "$command")
 
@@ -50,7 +51,7 @@ function measure_blocksz()
 
 function measure_npart_gpu()
 {
-  gpu_sim_no_traj $1 10000 32
+  gpu_sim_no_traj $1 10000 32 $2
 }
 
 function measure_npart_cpu()
@@ -67,11 +68,19 @@ function measure_npart_cpu()
 #measure_npart_gpu 10000
 #measure_npart_gpu 100000
 #measure_npart_gpu 1000000
+#measure_npart_gpu 10000000
 
-measure_npart_cpu 100
-measure_npart_cpu 1000
-measure_npart_cpu 10000
-measure_npart_cpu 100000
-measure_npart_cpu 1000000
+#measure_npart_gpu 100 1
+#measure_npart_gpu 1000 1
+#measure_npart_gpu 10000 1
+#measure_npart_gpu 100000 1
+#measure_npart_gpu 1000000 1
+#measure_npart_gpu 10000000 1
 
+#measure_npart_cpu 100
+#measure_npart_cpu 1000
+#measure_npart_cpu 10000
+#measure_npart_cpu 100000
+#measure_npart_cpu 1000000
+#measure_npart_cpu 10000000
 

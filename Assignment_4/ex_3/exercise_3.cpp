@@ -25,7 +25,8 @@ std::vector<float> create_vec(std::size_t n)
 
 void cpu_saxpy(const std::vector<float>& x, std::vector<float>& y, float a)
 {
-  for (auto i = 0ul; i < x.size(); ++i)
+  auto n = x.size();
+  for (auto i = 0ul; i < n; ++i)
   {
     y[i] += a * x[i];
   }
