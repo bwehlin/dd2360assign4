@@ -1,0 +1,77 @@
+#!/bin/bash
+
+function gpu_sim_no_traj()
+{
+  NUM_PART=$1
+  NUM_ITER=$2
+  BLOCK_SZ=$3
+
+  command="srun -n 1 ./exbonus.out $NUM_PART $NUM_ITER $BLOCK_SZ 0"
+  echo "COMMAND: $command"
+  simout=$(sh -c "$command")
+
+  gpuout=$(echo "$simout" | grep "GPU")
+
+  gpums=$(echo $gpuout | awk '{print $3}')
+  echo "[$NUM_PART, $NUM_ITER, $BLOCK_SZ, $gpums]," >> gputimes.csv
+}
+
+function cpu_sim()
+{
+  NUM_PART=$1
+  NUM_ITER=$2
+
+  command="srun -n 1 ./exbonus.out $NUM_PART $NUM_ITER"
+  echo "COMMAND: $command"
+  simout=$(sh -c "$command")
+
+  cpuout=$(echo "$simout" | grep "CPU")
+
+  cpums=$(echo $cpuout | awk '{print $3}')
+  echo "[$NUM_PART, $NUM_ITER, $cpums]," >> cputimes.csv
+
+}
+
+echo "particles, iterations, blocksize, gpu" > gputimes.csv
+echo "particles, iterations, cpu" > cputimes.csv
+
+function measure_blocksz()
+{
+  gpu_sim_no_traj $1 10000 4
+  gpu_sim_no_traj $1 10000 8
+  gpu_sim_no_traj $1 10000 16
+  gpu_sim_no_traj $1 10000 32
+  gpu_sim_no_traj $1 10000 64
+  gpu_sim_no_traj $1 10000 128
+  gpu_sim_no_traj $1 10000 256
+  gpu_sim_no_traj $1 10000 512
+  gpu_sim_no_traj $1 10000 1024
+}
+
+function measure_npart_gpu()
+{
+  gpu_sim_no_traj $1 10000 32
+}
+
+function measure_npart_cpu()
+{
+  cpu_sim $1 10000
+}
+
+#measure_blocksz 10000
+#measure_blocksz 100000
+#measure_blocksz 1000000
+
+#measure_npart_gpu 100
+#measure_npart_gpu 1000
+#measure_npart_gpu 10000
+#measure_npart_gpu 100000
+#measure_npart_gpu 1000000
+
+measure_npart_cpu 100
+measure_npart_cpu 1000
+measure_npart_cpu 10000
+measure_npart_cpu 100000
+measure_npart_cpu 1000000
+
+

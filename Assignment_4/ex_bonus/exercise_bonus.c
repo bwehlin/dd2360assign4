@@ -5,6 +5,8 @@
 #include <string.h>
 #include <errno.h>
 #include <math.h>
+#include <unistd.h>
+#include <sys/time.h>
 #include <CL/cl.h>
 
 // This is a macro for checking the error variable.
@@ -16,6 +18,7 @@
 #define false 0
 #endif
 
+
 // A errorCode to string converter (forward declaration)
 const char* clGetErrorString(int);
 
@@ -24,6 +27,12 @@ typedef struct
   float pos[3];
   float vel[3];
 } Particle;
+
+void print_time(const char* op, struct timeval* start, struct timeval* end)
+{
+  float ms = (float)(end->tv_sec - start->tv_sec) * 1e3f + (float)(end->tv_usec - start->tv_usec) / 1e3f;
+  printf("%s took %.3f ms", op, ms);
+}
 
 const char *lorentz_kernel = R"~(
   typedef struct
@@ -56,7 +65,31 @@ const char *lorentz_kernel = R"~(
       p->pos[dim] = p->pos[dim] +  dt * p->vel[dim]; 
     }
   }
-)~"; //TODO: Write your kernel here
+)~";
+
+void lorentz_cpu(Particle* particles, float dt, int n_part, int n_iter)
+{
+  float sigma = 10.f;
+  float rho = 28.f;
+  float beta = 8.f/3.f;
+
+  for (int j = 0; j < n_iter; ++j)
+  {
+    for (int i = 0; i < n_part; ++i)
+    {
+      Particle* p = &particles[i];
+
+      p->vel[0] = sigma * (p->pos[1] - p->pos[0]);
+      p->vel[1] = p->pos[0] * (rho - p->pos[2]) - p->pos[1];
+      p->vel[2] = p->pos[0] * p->pos[1] - beta * p->pos[2];
+
+      for (int dim = 0; dim < 3; ++dim)
+      {
+        p->pos[dim] = p->pos[dim] +  dt * p->vel[dim]; 
+      }
+    }
+  }
+}
 
 
 Particle* create_particles(size_t n)
@@ -76,18 +109,13 @@ Particle* create_particles(size_t n)
   return arr;
 }
 
-#define BLOCK_SZ 128
-
-int main(int argc, char **argv) {
-
-  if (argc != 3)
-  {
-    printf("usage: %s n_particles\n", argv[0]);
-    return EXIT_FAILURE;
-  }
-
-  int n_particles = atoi(argv[1]);
-  int n_iter = atoi(argv[2]);
+int gpu_main(char** args)
+{
+  int n_particles = atoi(args[1]);
+  int n_iter = atoi(args[2]);
+  int blocksz = atoi(args[3]);
+  int write_output = atoi(args[4]);
+  
   printf("Running with %d particles over %d iterations...\n", n_particles, n_iter);
 
   Particle* particles = create_particles(n_particles);
@@ -134,7 +162,6 @@ int main(int argc, char **argv) {
   }
 
   cl_kernel kernel = clCreateKernel(program, "lorentz", &err);CHK_ERROR(err);
-
   cl_mem particles_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, n_particles*sizeof(Particle), NULL, &err);CHK_ERROR(err);
 
   cl_int n_dev = n_particles;
@@ -143,13 +170,20 @@ int main(int argc, char **argv) {
 
   err = clEnqueueWriteBuffer(cmd_queue, particles_dev, CL_TRUE, 0, n_particles*sizeof(Particle), particles, 0, NULL, NULL);CHK_ERROR(err);
 
-  FILE* fl = fopen("sims.csv", "w");
-  if (!fl)
+  FILE* fl = NULL;
+  
+  if (write_output)
   {
-    printf("Error: %s\n", strerror(errno));
-    return EXIT_FAILURE;
+    fl = fopen("sims.csv", "w");
+    if (!fl)
+    {
+      printf("Error: %s\n", strerror(errno));
+      return EXIT_FAILURE;
+    }
   }
 
+  struct timeval begin = {0}, end = {0};
+  gettimeofday(&begin, NULL);
   for (size_t i = 0; i < n_iter; ++i)
   {
     err = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&particles_dev);
@@ -157,23 +191,29 @@ int main(int argc, char **argv) {
     err = clSetKernelArg(kernel, 1, sizeof(cl_float), (void*)&dt_dev);
     err = clSetKernelArg(kernel, 2, sizeof(cl_int), (void*)&n_dev);
 
-    size_t n_workitem[1] = {((n_particles+BLOCK_SZ-1)/BLOCK_SZ)*BLOCK_SZ};
-    size_t workgroup_size[1] = {BLOCK_SZ};
+    size_t n_workitem[1] = {((n_particles+blocksz-1)/blocksz)*blocksz};
+    size_t workgroup_size[1] = {blocksz};
     err = clEnqueueNDRangeKernel(cmd_queue, kernel, 1, NULL, n_workitem, workgroup_size, 0, NULL, NULL);CHK_ERROR(err);
 
-    err = clEnqueueReadBuffer(cmd_queue, particles_dev, CL_TRUE, 0, n_particles*sizeof(Particle), particles, 0, NULL, NULL);
-
-    err = clFlush(cmd_queue);CHK_ERROR(err);
-    err = clFinish(cmd_queue);CHK_ERROR(err);
-
-    fprintf(fl, "%f", (float)i * dt);
-    for (int j = 0; j < 3; ++j)
+    if (write_output)
     {
-      Particle* part = &particles[j];
-      fprintf(fl, ", %f, %f, %f", part->pos[0], part->pos[1], part->pos[2]);
+      err = clEnqueueReadBuffer(cmd_queue, particles_dev, CL_TRUE, 0, n_particles*sizeof(Particle), particles, 0, NULL, NULL);
+
+      err = clFlush(cmd_queue);CHK_ERROR(err);
+      err = clFinish(cmd_queue);CHK_ERROR(err);
+
+      fprintf(fl, "%f", (float)i * dt);
+      for (int j = 0; j < 3; ++j)
+      {
+        Particle* part = &particles[j];
+        fprintf(fl, ", %f, %f, %f", part->pos[0], part->pos[1], part->pos[2]);
+      }
+      fprintf(fl, "\n");
     }
-    fprintf(fl, "\n");
   }
+  err = clFinish(cmd_queue);CHK_ERROR(err);
+  gettimeofday(&end, NULL);
+  print_time("GPU", &begin, &end);
 
   // Finally, release all that we have allocated.
   err = clReleaseCommandQueue(cmd_queue);CHK_ERROR(err);
@@ -185,7 +225,42 @@ int main(int argc, char **argv) {
   free(device_list);
   free(particles);
 
-  return 0;
+  return EXIT_SUCCESS;
+}
+
+int cpu_main(char** args)
+{
+  int n_particles = atoi(args[1]);
+  int n_iter = atoi(args[2]);
+  float dt = 0.001f;
+
+  Particle* particles = create_particles(n_particles);
+
+  struct timeval begin, end;
+  gettimeofday(&begin, NULL);
+  lorentz_cpu(particles, dt, n_particles, n_iter);
+  gettimeofday(&end, NULL);
+
+  print_time("CPU", &begin, &end);
+
+  free(particles);
+}
+
+int main(int argc, char **argv)
+{
+  if (argc == 3)
+  {
+    return cpu_main(argv);
+  }
+  else if (argc == 5)
+  {
+    return gpu_main(argv);
+  }
+  else
+  {
+    printf("usage: %s n_particles n_iterations [block_sz write_output]\n", argv[0]);
+    return EXIT_FAILURE;
+  }
 }
 
 
