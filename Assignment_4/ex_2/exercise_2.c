@@ -20,14 +20,14 @@ const char* clGetErrorString(int);
 
 const char *saxpy_kernel = R"~(
   __kernel
-  void saxpy(__global float* x, __global float* y, __global float* a, __global size_t* n)
+  void saxpy(__global float* x, __global float* y, float a, long n)
   {
     int idx = get_global_id(0);
-    if (idx >= *n)
+    if (idx >= n)
       return;
-    y[idx] =  *a * x[idx] + y[idx];
+    y[idx] =  a * x[idx] + y[idx];
   }
-)~"; //TODO: Write your kernel here
+)~";
 
 void cpu_saxpy(float* x, float* y, float a, size_t n)
 {
@@ -114,21 +114,18 @@ int main(int argc, char **argv) {
   cl_mem x_dev = clCreateBuffer(context, CL_MEM_READ_ONLY, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
   cl_mem y_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, n_items*sizeof(float), NULL, &err);CHK_ERROR(err);
 
-  cl_mem a_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float), NULL, &err);CHK_ERROR(err);
-  cl_mem n_dev = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(size_t), NULL, &err);CHK_ERROR(err);
+  cl_float a_dev = a;
+  cl_long n_dev = n_items;
 
 
   err = clEnqueueWriteBuffer(cmd_queue, x_dev, CL_TRUE, 0, n_items*sizeof(float), x, 0, NULL, NULL);CHK_ERROR(err);
   err = clEnqueueWriteBuffer(cmd_queue, y_dev, CL_TRUE, 0, n_items*sizeof(float), y, 0, NULL, NULL);CHK_ERROR(err);
-  
-  err = clEnqueueWriteBuffer(cmd_queue, a_dev, CL_TRUE, 0, sizeof(float), &a, 0, NULL, NULL);CHK_ERROR(err);
-  err = clEnqueueWriteBuffer(cmd_queue, n_dev, CL_TRUE, 0, sizeof(size_t), &n_items, 0, NULL, NULL);CHK_ERROR(err);
 
   err = clSetKernelArg(kernel, 0, sizeof(cl_mem), (void*)&x_dev);
   err = clSetKernelArg(kernel, 1, sizeof(cl_mem), (void*)&y_dev);
   
-  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), (void*)&a_dev);
-  err = clSetKernelArg(kernel, 3, sizeof(cl_mem), (void*)&n_dev);
+  err = clSetKernelArg(kernel, 2, sizeof(cl_float), (void*)&a_dev);
+  err = clSetKernelArg(kernel, 3, sizeof(cl_long), (void*)&n_dev);
 
   size_t n_workitem[1] = {((n_items+BLOCK_SZ-1)/BLOCK_SZ)*BLOCK_SZ};
   size_t workgroup_size[1] = {BLOCK_SZ};
@@ -162,8 +159,6 @@ int main(int argc, char **argv) {
 
   err = clReleaseMemObject(x_dev);CHK_ERROR(err);
   err = clReleaseMemObject(y_dev);CHK_ERROR(err);
-  err = clReleaseMemObject(a_dev);CHK_ERROR(err);
-  err = clReleaseMemObject(n_dev);CHK_ERROR(err);
 
   free(platforms);
   free(device_list);
